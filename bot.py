@@ -1,6 +1,8 @@
 import os
 import logging
-import anthropic
+import json
+import re
+import google.generativeai as genai
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -10,17 +12,24 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# States
 (BRAND, INN, FORM, AUDIENCE, GROUP, INDICATIONS, CHOOSE_STYLE, DONE) = range(8)
 
 DOSAGE_FORMS = ["Таблетки", "Капсулы", "Суспензия/Сироп", "Инъекции", "Гель/Крем", "Капли", "Спрей"]
 AUDIENCES = ["Взрослые (18+)", "Дети и родители", "Пожилые (55+)", "Все возрасты", "Врачи/Фармацевты"]
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-def get_claude_client():
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+def get_gemini():
+    genai.configure(api_key=GEMINI_API_KEY)
+    return genai.GenerativeModel("gemini-1.5-flash")
+
+def call_gemini(prompt):
+    model = get_gemini()
+    response = model.generate_content(prompt)
+    text = response.text.strip()
+    text = re.sub(r'```json|```', '', text).strip()
+    return text
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -42,7 +51,7 @@ async def get_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['brand'] = update.message.text.strip()
     await update.message.reply_text(
         f"✅ Название: *{context.user_data['brand']}*\n\n"
-        "Теперь введите *МНН* (международное непатентованное название / действующее вещество):",
+        "Теперь введите *МНН* (действующее вещество):",
         parse_mode="Markdown"
     )
     return INN
@@ -51,8 +60,7 @@ async def get_inn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['inn'] = update.message.text.strip()
     keyboard = [[f] for f in DOSAGE_FORMS]
     await update.message.reply_text(
-        f"✅ МНН: *{context.user_data['inn']}*\n\n"
-        "Выберите *лекарственную форму*:",
+        f"✅ МНН: *{context.user_data['inn']}*\n\nВыберите *лекарственную форму*:",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
@@ -62,8 +70,7 @@ async def get_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['form'] = update.message.text.strip()
     keyboard = [[a] for a in AUDIENCES]
     await update.message.reply_text(
-        f"✅ Форма: *{context.user_data['form']}*\n\n"
-        "Выберите *целевую аудиторию*:",
+        f"✅ Форма: *{context.user_data['form']}*\n\nВыберите *целевую аудиторию*:",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
@@ -73,8 +80,7 @@ async def get_audience(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['audience'] = update.message.text.strip()
     await update.message.reply_text(
         f"✅ Аудитория: *{context.user_data['audience']}*\n\n"
-        "Введите *фармакологическую группу* препарата\n"
-        "_(например: кишечный антисептик, анальгетик, витамин)_:",
+        "Введите *фармакологическую группу*\n_(например: кишечный антисептик, витамин)_:",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove()
     )
@@ -84,28 +90,23 @@ async def get_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['group'] = update.message.text.strip()
     await update.message.reply_text(
         f"✅ Группа: *{context.user_data['group']}*\n\n"
-        "Последний шаг! Опишите *основные показания и преимущества* препарата\n"
-        "_(2-3 предложения)_:",
+        "Последний шаг! Опишите *показания и преимущества* препарата\n_(2-3 предложения)_:",
         parse_mode="Markdown"
     )
     return INDICATIONS
 
 async def get_indications(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['indications'] = update.message.text.strip()
-
     await update.message.reply_text(
-        "🔍 *Анализирую препарат и подбираю стили рекламы...*\n\n"
-        "⏳ Это займёт 15–20 секунд",
+        "🔍 *Анализирую препарат и подбираю стили рекламы...*\n\n⏳ 15–20 секунд",
         parse_mode="Markdown"
     )
-
     try:
-        styles = await generate_styles(context.user_data)
+        styles = generate_styles(context.user_data)
         context.user_data['styles'] = styles
 
         text = "🎨 *Готово! Выберите стиль видеорекламы:*\n\n"
         keyboard_buttons = []
-
         for i, s in enumerate(styles, 1):
             text += (
                 f"*{i}. {s['name']}* — ⭐ {s['score']}/5\n"
@@ -119,21 +120,16 @@ async def get_indications(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )])
 
         await update.message.reply_text(
-            text,
-            parse_mode="Markdown",
+            text, parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard_buttons)
         )
         return CHOOSE_STYLE
-
     except Exception as e:
-        await update.message.reply_text(
-            f"❌ Ошибка: {str(e)}\n\nПопробуйте снова: /start"
-        )
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПопробуйте: /start")
         return ConversationHandler.END
 
-async def generate_styles(data):
-    client = get_claude_client()
-    prompt = f"""Ты — эксперт по фармацевтической видеорекламе.
+def generate_styles(data):
+    prompt = f"""Ты эксперт по фармацевтической видеорекламе.
 
 Препарат:
 - Название: {data['brand']}
@@ -144,7 +140,6 @@ async def generate_styles(data):
 - Показания: {data['indications']}
 
 Предложи 4 стиля видеорекламы. Верни ТОЛЬКО JSON массив без markdown:
-
 [
   {{
     "name": "Название стиля",
@@ -154,16 +149,7 @@ async def generate_styles(data):
     "why": "Почему подходит (1 предложение)"
   }}
 ]"""
-
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    import json, re
-    text = message.content[0].text.strip()
-    text = re.sub(r'```json|```', '', text).strip()
+    text = call_gemini(prompt)
     start = text.find('[')
     end = text.rfind(']')
     return json.loads(text[start:end+1])
@@ -171,30 +157,23 @@ async def generate_styles(data):
 async def choose_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     idx = int(query.data.split('_')[1])
     style = context.user_data['styles'][idx]
     context.user_data['selected_style'] = style
 
     await query.edit_message_text(
-        f"✅ Выбран стиль: *{style['name']}*\n\n"
-        "🎬 *Генерирую сценарий и сторибоард...*\n"
-        "⏳ 20–30 секунд",
+        f"✅ Выбран стиль: *{style['name']}*\n\n🎬 *Генерирую сценарий...*\n⏳ 20–30 секунд",
         parse_mode="Markdown"
     )
-
     try:
-        script = await generate_script(context.user_data)
+        script = generate_script(context.user_data)
         await send_script(query, script, context.user_data)
     except Exception as e:
         await query.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПопробуйте: /start")
-
     return DONE
 
-async def generate_script(data):
-    client = get_claude_client()
+def generate_script(data):
     style = data['selected_style']
-
     prompt = f"""Создай профессиональный сценарий видеорекламы.
 
 ПРЕПАРАТ: {data['brand']} ({data['inn']})
@@ -220,16 +199,7 @@ async def generate_script(data):
   "version_30": "Описание 30-сек версии",
   "version_15": "Описание 15-сек версии"
 }}"""
-
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    import json, re
-    text = message.content[0].text.strip()
-    text = re.sub(r'```json|```', '', text).strip()
+    text = call_gemini(prompt)
     start = text.find('{')
     end = text.rfind('}')
     return json.loads(text[start:end+1])
@@ -238,13 +208,13 @@ async def send_script(query, script, data):
     brand = data['brand']
     style = data['selected_style']['name']
 
-    msg1 = (
+    await query.message.reply_text(
         f"🎬 *Сценарий готов: {brand}*\n"
         f"🎨 Стиль: {style}\n\n"
         f"✨ *Слоган:*\n_{script.get('logline', '')}_\n\n"
-        f"📢 *CTA:* {script.get('cta', '')}"
+        f"📢 *CTA:* {script.get('cta', '')}",
+        parse_mode="Markdown"
     )
-    await query.message.reply_text(msg1, parse_mode="Markdown")
 
     scenes = script.get('scenes', [])
     if scenes:
@@ -261,28 +231,22 @@ async def send_script(query, script, data):
     vo = script.get('voiceover_full', '')
     if vo:
         await query.message.reply_text(
-            f"🎙️ *Полный текст озвучки:*\n\n{vo}",
-            parse_mode="Markdown"
+            f"🎙️ *Полный текст озвучки:*\n\n{vo}", parse_mode="Markdown"
         )
 
-    versions = (
+    await query.message.reply_text(
         f"⏱️ *Версия 30 сек:*\n{script.get('version_30', '')}\n\n"
         f"⚡ *Версия 15 сек:*\n{script.get('version_15', '')}\n\n"
-        "✅ *Сценарий готов!*\n"
-        "Для нового препарата напишите /start"
+        "✅ *Готово! Для нового препарата: /start*",
+        parse_mode="Markdown"
     )
-    await query.message.reply_text(versions, parse_mode="Markdown")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "❌ Отменено. Напишите /start чтобы начать заново.",
-        reply_markup=ReplyKeyboardRemove()
-    )
+    await update.message.reply_text("❌ Отменено. /start — начать заново.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -297,7 +261,6 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
-
     app.add_handler(conv)
     app.run_polling(drop_pending_updates=True)
 
