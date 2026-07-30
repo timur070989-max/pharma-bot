@@ -20,9 +20,11 @@ AUDIENCES = ["Взрослые (18+)", "Дети и родители", "Пожи
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
+
 def get_gemini():
     genai.configure(api_key=GEMINI_API_KEY)
     return genai.GenerativeModel("gemini-2.5-flash")
+
 
 def call_gemini(prompt):
     model = get_gemini()
@@ -30,6 +32,7 @@ def call_gemini(prompt):
     text = response.text.strip()
     text = re.sub(r'```json|```', '', text).strip()
     return text
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -47,6 +50,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return BRAND
 
+
 async def get_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['brand'] = update.message.text.strip()
     await update.message.reply_text(
@@ -55,6 +59,7 @@ async def get_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return INN
+
 
 async def get_inn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['inn'] = update.message.text.strip()
@@ -66,6 +71,7 @@ async def get_inn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return FORM
 
+
 async def get_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['form'] = update.message.text.strip()
     keyboard = [[a] for a in AUDIENCES]
@@ -75,6 +81,7 @@ async def get_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return AUDIENCE
+
 
 async def get_audience(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['audience'] = update.message.text.strip()
@@ -86,6 +93,7 @@ async def get_audience(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return GROUP
 
+
 async def get_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['group'] = update.message.text.strip()
     await update.message.reply_text(
@@ -94,6 +102,7 @@ async def get_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return INDICATIONS
+
 
 async def get_indications(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['indications'] = update.message.text.strip()
@@ -104,7 +113,6 @@ async def get_indications(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         styles = generate_styles(context.user_data)
         context.user_data['styles'] = styles
-
         text = "🎨 *Готово! Выберите стиль видеорекламы:*\n\n"
         keyboard_buttons = []
         for i, s in enumerate(styles, 1):
@@ -118,7 +126,6 @@ async def get_indications(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{i}. {s['name']} ⭐{s['score']}",
                 callback_data=f"style_{i-1}"
             )])
-
         await update.message.reply_text(
             text, parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard_buttons)
@@ -127,6 +134,7 @@ async def get_indications(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПопробуйте: /start")
         return ConversationHandler.END
+
 
 def generate_styles(data):
     prompt = f"""Ты эксперт по фармацевтической видеорекламе.
@@ -141,18 +149,19 @@ def generate_styles(data):
 
 Предложи 4 стиля видеорекламы. Верни ТОЛЬКО JSON массив без markdown:
 [
-  {{
-    "name": "Название стиля",
-    "score": 4.8,
-    "audience": "Аудитория",
-    "conversion": "Высокий",
-    "why": "Почему подходит (1 предложение)"
-  }}
+{{
+"name": "Название стиля",
+"score": 4.8,
+"audience": "Аудитория",
+"conversion": "Высокий",
+"why": "Почему подходит (1 предложение)"
+}}
 ]"""
     text = call_gemini(prompt)
     start = text.find('[')
     end = text.rfind(']')
     return json.loads(text[start:end+1])
+
 
 async def choose_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -160,7 +169,6 @@ async def choose_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     idx = int(query.data.split('_')[1])
     style = context.user_data['styles'][idx]
     context.user_data['selected_style'] = style
-
     await query.edit_message_text(
         f"✅ Выбран стиль: *{style['name']}*\n\n🎬 *Генерирую сценарий...*\n⏳ 20–30 секунд",
         parse_mode="Markdown"
@@ -171,6 +179,7 @@ async def choose_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПопробуйте: /start")
     return DONE
+
 
 def generate_script(data):
     style = data['selected_style']
@@ -184,30 +193,30 @@ def generate_script(data):
 
 Верни ТОЛЬКО JSON без markdown:
 {{
-  "logline": "Главный слоган",
-  "scenes": [
-    {{
-      "num": "Сцена 1",
-      "duration": "0-5 сек",
-      "visual": "Видеоряд",
-      "voiceover": "Текст озвучки",
-      "onscreen": "Текст на экране"
-    }}
-  ],
-  "voiceover_full": "Полный текст озвучки",
-  "cta": "Призыв к действию",
-  "version_30": "Описание 30-сек версии",
-  "version_15": "Описание 15-сек версии"
+"logline": "Главный слоган",
+"scenes": [
+{{
+"num": "Сцена 1",
+"duration": "0-5 сек",
+"visual": "Видеоряд",
+"voiceover": "Текст озвучки",
+"onscreen": "Текст на экране"
+}}
+],
+"voiceover_full": "Полный текст озвучки",
+"cta": "Призыв к действию",
+"version_30": "Описание 30-сек версии",
+"version_15": "Описание 15-сек версии"
 }}"""
     text = call_gemini(prompt)
     start = text.find('{')
     end = text.rfind('}')
     return json.loads(text[start:end+1])
 
+
 async def send_script(query, script, data):
     brand = data['brand']
     style = data['selected_style']['name']
-
     await query.message.reply_text(
         f"🎬 *Сценарий готов: {brand}*\n"
         f"🎨 Стиль: {style}\n\n"
@@ -215,7 +224,6 @@ async def send_script(query, script, data):
         f"📢 *CTA:* {script.get('cta', '')}",
         parse_mode="Markdown"
     )
-
     scenes = script.get('scenes', [])
     if scenes:
         scenes_text = "🎥 *Сторибоард:*\n\n"
@@ -227,13 +235,11 @@ async def send_script(query, script, data):
                 f"📝 {s.get('onscreen', '')}\n\n"
             )
         await query.message.reply_text(scenes_text, parse_mode="Markdown")
-
     vo = script.get('voiceover_full', '')
     if vo:
         await query.message.reply_text(
             f"🎙️ *Полный текст озвучки:*\n\n{vo}", parse_mode="Markdown"
         )
-
     await query.message.reply_text(
         f"⏱️ *Версия 30 сек:*\n{script.get('version_30', '')}\n\n"
         f"⚡ *Версия 15 сек:*\n{script.get('version_15', '')}\n\n"
@@ -241,12 +247,15 @@ async def send_script(query, script, data):
         parse_mode="Markdown"
     )
 
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Отменено. /start — начать заново.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -262,7 +271,24 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     app.add_handler(conv)
-    app.run_polling(drop_pending_updates=True)
+
+    # --- Webhook-режим для Render Web Service (бесплатный тариф) ---
+    PORT = int(os.environ.get("PORT", 10000))
+    RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+
+    if not RENDER_URL:
+        logger.warning(
+            "RENDER_EXTERNAL_URL не задан — если запускаешь локально, "
+            "используй run_polling() вместо run_webhook()."
+        )
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=f"{RENDER_URL}/{BOT_TOKEN}"
+    )
+
 
 if __name__ == "__main__":
     main()
