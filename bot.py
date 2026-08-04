@@ -51,7 +51,7 @@ def escape_drawtext(text):
 
 
 def wrap_lines(text, font_size, max_width=VIDEO_W):
-    chars_per_line = max(1, int(max_width * 0.9 / (font_size * 0.56)))
+    chars_per_line = max(1, int(max_width * 0.82 / (font_size * 0.62)))
     words = (text or "").split()
     lines, current = [], ""
     for w in words:
@@ -150,7 +150,7 @@ def build_outro_clip(tmpdir, data, script, photo_path=None):
             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
             "-filter_complex",
             f"[1:v]scale={VIDEO_W}:{photo_h}:force_original_aspect_ratio=decrease[pic];"
-            f"[0:v][pic]overlay=(W-w)/2:(H-h)/2[bg];"
+            f"[0:v][pic]overlay=(W-w)/2:({photo_h}-h)/2[bg];"
             f"[bg]drawtext=fontfile='{FONT_PATH}':textfile='{brand_file}':fontcolor=white:fontsize=48:line_spacing=6:"
             f"x=(w-text_w)/2:y={y_brand},"
             f"drawtext=fontfile='{FONT_PATH}':textfile='{cta_file}':fontcolor=white:fontsize=30:line_spacing=6:"
