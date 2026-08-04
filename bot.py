@@ -199,20 +199,30 @@ def assemble_video_sync(data, script, photo_path=None):
         return out_path
 
 
+WELCOME_TEXT = (
+    "🎬 *PharmaAd AI — Генератор видеорекламы*\n\n"
+    "Привет! Я помогу создать профессиональный сценарий видеорекламы для вашего препарата.\n\n"
+    "📋 Нам понадобится:\n"
+    "• Торговое название препарата\n"
+    "• МНН (действующее вещество)\n"
+    "• Лекарственная форма\n"
+    "• Целевая аудитория\n"
+    "• Показания и преимущества\n\n"
+    "Начнём? Введите *торговое название* препарата:"
+)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text(
-        "🎬 *PharmaAd AI — Генератор видеорекламы*\n\n"
-        "Привет! Я помогу создать профессиональный сценарий видеорекламы для вашего препарата.\n\n"
-        "📋 Нам понадобится:\n"
-        "• Торговое название препарата\n"
-        "• МНН (действующее вещество)\n"
-        "• Лекарственная форма\n"
-        "• Целевая аудитория\n"
-        "• Показания и преимущества\n\n"
-        "Начнём? Введите *торговое название* препарата:",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
+    return BRAND
+
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await query.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
     return BRAND
 
 
@@ -461,6 +471,7 @@ async def run_video_generation(message, context: ContextTypes.DEFAULT_TYPE):
         "🎬 *Собираю видео из сториборда...*\n⏳ Обычно занимает 1–3 минуты",
         parse_mode="Markdown"
     )
+    restart_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Новый препарат", callback_data="restart")]])
     out_path = None
     try:
         out_path = await asyncio.to_thread(assemble_video_sync, data, data['script'], photo_path)
@@ -468,11 +479,13 @@ async def run_video_generation(message, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_video(
                 f, caption=f"🎬 {data['brand']} — {data['selected_style']['name']}\n"
                            "⚠️ Черновик на стоковых кадрах для внутренней оценки. "
-                           "Требует юридической проверки перед публикацией."
+                           "Требует юридической проверки перед публикацией.",
+                reply_markup=restart_kb
             )
         await status_msg.delete()
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка генерации видео: {str(e)}")
+        await message.reply_text("Попробовать другой препарат:", reply_markup=restart_kb)
     finally:
         if out_path and os.path.exists(out_path):
             os.remove(out_path)
@@ -504,6 +517,7 @@ def main():
             ],
             DONE: [
                 CallbackQueryHandler(ask_for_photo, pattern="^gen_video$"),
+                CallbackQueryHandler(restart, pattern="^restart$"),
                 CommandHandler("start", start),
             ],
         },
