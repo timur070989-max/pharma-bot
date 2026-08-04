@@ -17,7 +17,7 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-(BRAND, INN, FORM, AUDIENCE, GROUP, INDICATIONS, CHOOSE_STYLE, DONE) = range(8)
+(BRAND, INN, FORM, AUDIENCE, GROUP, INDICATIONS, CHOOSE_STYLE, WAIT_PHOTO, DONE) = range(9)
 
 DOSAGE_FORMS = ["Таблетки", "Капсулы", "Суспензия/Сироп", "Инъекции", "Гель/Крем", "Капли", "Спрей"]
 AUDIENCES = ["Взрослые (18+)", "Дети и родители", "Пожилые (55+)", "Все возрасты", "Врачи/Фармацевты"]
@@ -48,6 +48,22 @@ def run_ffmpeg(args):
 
 def escape_drawtext(text):
     return (text or "").replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+
+
+def wrap_drawtext(text, font_size, max_width=VIDEO_W):
+    chars_per_line = max(1, int(max_width * 0.9 / (font_size * 0.56)))
+    words = escape_drawtext(text).split(" ")
+    lines, current = [], ""
+    for w in words:
+        candidate = f"{current} {w}".strip()
+        if len(candidate) > chars_per_line and current:
+            lines.append(current)
+            current = w
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return "\\n".join(lines)
 
 
 async def synthesize_tts(text, out_path):
@@ -86,13 +102,13 @@ def build_scene_clip(tmpdir, idx, scene):
     fetch_pexels_video(query, raw_video)
     asyncio.run(synthesize_tts(scene.get("voiceover", ""), voice_path))
 
-    onscreen = escape_drawtext(scene.get("onscreen", ""))
+    onscreen = wrap_drawtext(scene.get("onscreen", ""), 40)
     vf = f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H}"
     if onscreen:
         vf += (
             f",drawtext=fontfile='{FONT_PATH}':text='{onscreen}':"
-            "fontcolor=white:fontsize=48:box=1:boxcolor=black@0.5:boxborderw=16:"
-            "x=(w-text_w)/2:y=h-th-80"
+            "fontcolor=white:fontsize=40:line_spacing=6:box=1:boxcolor=black@0.5:boxborderw=16:"
+            "x=(w-text_w)/2:y=h-text_h-60"
         )
 
     run_ffmpeg([
@@ -111,18 +127,31 @@ def build_scene_clip(tmpdir, idx, scene):
     return clip_path
 
 
-def build_outro_clip(tmpdir, data, script):
+def build_outro_clip(tmpdir, data, script, photo_path=None):
     outro_path = os.path.join(tmpdir, "outro.mp4")
-    brand = escape_drawtext(data['brand'])
-    cta = escape_drawtext(script.get('cta', ''))
+    brand = wrap_drawtext(data['brand'], 56)
+    cta = wrap_drawtext(script.get('cta', ''), 34)
+
+    if photo_path:
+        bg_input = ["-loop", "1", "-i", photo_path]
+        bg_filter = f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},"
+        box = "box=1:boxcolor=black@0.55:boxborderw=12:"
+        y_brand, y_cta = "h*0.72", "h*0.84"
+    else:
+        bg_input = ["-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}"]
+        bg_filter = ""
+        box = ""
+        y_brand, y_cta = "h*0.30", "h*0.48"
+
     run_ffmpeg([
-        "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}:r={VIDEO_FPS}:d=2.5",
+        *bg_input,
         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
         "-vf",
-        f"drawtext=fontfile='{FONT_PATH}':text='{brand}':fontcolor=white:fontsize=60:"
-        f"x=(w-text_w)/2:y=(h/2)-80,"
-        f"drawtext=fontfile='{FONT_PATH}':text='{cta}':fontcolor=white:fontsize=40:"
-        f"x=(w-text_w)/2:y=(h/2)+20",
+        f"{bg_filter}drawtext=fontfile='{FONT_PATH}':text='{brand}':fontcolor=white:fontsize=56:line_spacing=6:{box}"
+        f"x=(w-text_w)/2:y={y_brand},"
+        f"drawtext=fontfile='{FONT_PATH}':text='{cta}':fontcolor=white:fontsize=34:line_spacing=6:{box}"
+        f"x=(w-text_w)/2:y={y_cta}",
+        "-r", str(VIDEO_FPS),
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
         "-c:a", "aac", "-ar", "44100", "-ac", "1",
         "-t", "2.5",
@@ -139,10 +168,10 @@ def concat_clips(tmpdir, clip_paths, output_path):
     run_ffmpeg(["-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path])
 
 
-def assemble_video_sync(data, script):
+def assemble_video_sync(data, script, photo_path=None):
     with tempfile.TemporaryDirectory() as tmpdir:
         clips = [build_scene_clip(tmpdir, i, s) for i, s in enumerate(script.get("scenes", []))]
-        clips.append(build_outro_clip(tmpdir, data, script))
+        clips.append(build_outro_clip(tmpdir, data, script, photo_path))
         fd, out_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         concat_clips(tmpdir, clips, out_path)
@@ -368,22 +397,54 @@ async def send_script(query, script, data):
     )
 
 
-async def generate_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ask_for_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = context.user_data
     if 'script' not in data or 'selected_style' not in data:
         await query.message.reply_text("❌ Сначала сгенерируйте сценарий: /start")
-        return
-    status_msg = await query.message.reply_text(
+        return DONE
+    await query.message.reply_text(
+        "📦 Пришлите фото упаковки препарата — вставлю его в финальную карточку видео "
+        "вместо однотонного фона.\n\nЕсли фото нет — нажмите «Пропустить».",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Пропустить", callback_data="skip_photo")
+        ]])
+    )
+    return WAIT_PHOTO
+
+
+async def receive_package_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+    fd, path = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    await file.download_to_drive(path)
+    context.user_data['package_photo'] = path
+    await run_video_generation(update.message, context)
+    return DONE
+
+
+async def skip_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['package_photo'] = None
+    await run_video_generation(query.message, context)
+    return DONE
+
+
+async def run_video_generation(message, context: ContextTypes.DEFAULT_TYPE):
+    data = context.user_data
+    photo_path = data.get('package_photo')
+    status_msg = await message.reply_text(
         "🎬 *Собираю видео из сториборда...*\n⏳ Обычно занимает 1–3 минуты",
         parse_mode="Markdown"
     )
-    path = None
+    out_path = None
     try:
-        path = await asyncio.to_thread(assemble_video_sync, data, data['script'])
-        with open(path, "rb") as f:
-            await query.message.reply_video(
+        out_path = await asyncio.to_thread(assemble_video_sync, data, data['script'], photo_path)
+        with open(out_path, "rb") as f:
+            await message.reply_video(
                 f, caption=f"🎬 {data['brand']} — {data['selected_style']['name']}\n"
                            "⚠️ Черновик на стоковых кадрах для внутренней оценки. "
                            "Требует юридической проверки перед публикацией."
@@ -392,8 +453,10 @@ async def generate_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка генерации видео: {str(e)}")
     finally:
-        if path and os.path.exists(path):
-            os.remove(path)
+        if out_path and os.path.exists(out_path):
+            os.remove(out_path)
+        if photo_path and os.path.exists(photo_path):
+            os.remove(photo_path)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -414,8 +477,12 @@ def main():
             GROUP: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_group)],
             INDICATIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_indications)],
             CHOOSE_STYLE: [CallbackQueryHandler(choose_style, pattern="^style_")],
+            WAIT_PHOTO: [
+                MessageHandler(filters.PHOTO, receive_package_photo),
+                CallbackQueryHandler(skip_photo, pattern="^skip_photo$"),
+            ],
             DONE: [
-                CallbackQueryHandler(generate_video, pattern="^gen_video$"),
+                CallbackQueryHandler(ask_for_photo, pattern="^gen_video$"),
                 CommandHandler("start", start),
             ],
         },
