@@ -129,28 +129,41 @@ def build_scene_clip(tmpdir, idx, scene):
 
 def build_outro_clip(tmpdir, data, script, photo_path=None):
     outro_path = os.path.join(tmpdir, "outro.mp4")
-    brand = wrap_drawtext(data['brand'], 56)
-    cta = wrap_drawtext(script.get('cta', ''), 34)
 
     if photo_path:
-        bg_input = ["-loop", "1", "-i", photo_path]
-        bg_filter = f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H},"
-        box = "box=1:boxcolor=black@0.55:boxborderw=12:"
-        y_brand, y_cta = "h*0.72", "h*0.84"
+        photo_h = int(VIDEO_H * 0.55)
+        y_brand = photo_h + 40
+        y_cta = y_brand + 100
+        brand = wrap_drawtext(data['brand'], 48)
+        cta = wrap_drawtext(script.get('cta', ''), 30)
+        args = [
+            "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}",
+            "-loop", "1", "-i", photo_path,
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+            "-filter_complex",
+            f"[1:v]scale={VIDEO_W}:{photo_h}:force_original_aspect_ratio=decrease[pic];"
+            f"[0:v][pic]overlay=(W-w)/2:(H-h)/2[bg];"
+            f"[bg]drawtext=fontfile='{FONT_PATH}':text='{brand}':fontcolor=white:fontsize=48:line_spacing=6:"
+            f"x=(w-text_w)/2:y={y_brand},"
+            f"drawtext=fontfile='{FONT_PATH}':text='{cta}':fontcolor=white:fontsize=30:line_spacing=6:"
+            f"x=(w-text_w)/2:y={y_cta}[outv]",
+            "-map", "[outv]", "-map", "2:a:0",
+        ]
     else:
-        bg_input = ["-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}"]
-        bg_filter = ""
-        box = ""
-        y_brand, y_cta = "h*0.30", "h*0.48"
+        brand = wrap_drawtext(data['brand'], 56)
+        cta = wrap_drawtext(script.get('cta', ''), 34)
+        args = [
+            "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}",
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+            "-vf",
+            f"drawtext=fontfile='{FONT_PATH}':text='{brand}':fontcolor=white:fontsize=56:line_spacing=6:"
+            f"x=(w-text_w)/2:y=h*0.30,"
+            f"drawtext=fontfile='{FONT_PATH}':text='{cta}':fontcolor=white:fontsize=34:line_spacing=6:"
+            f"x=(w-text_w)/2:y=h*0.48",
+        ]
 
     run_ffmpeg([
-        *bg_input,
-        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
-        "-vf",
-        f"{bg_filter}drawtext=fontfile='{FONT_PATH}':text='{brand}':fontcolor=white:fontsize=56:line_spacing=6:{box}"
-        f"x=(w-text_w)/2:y={y_brand},"
-        f"drawtext=fontfile='{FONT_PATH}':text='{cta}':fontcolor=white:fontsize=34:line_spacing=6:{box}"
-        f"x=(w-text_w)/2:y={y_cta}",
+        *args,
         "-r", str(VIDEO_FPS),
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
         "-c:a", "aac", "-ar", "44100", "-ac", "1",
