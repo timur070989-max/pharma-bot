@@ -510,7 +510,10 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(restart, pattern="^restart$"),
+        ],
         states={
             BRAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_brand)],
             INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_inn)],
