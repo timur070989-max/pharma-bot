@@ -50,9 +50,9 @@ def escape_drawtext(text):
     return (text or "").replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
 
 
-def wrap_drawtext(text, font_size, max_width=VIDEO_W):
+def wrap_lines(text, font_size, max_width=VIDEO_W):
     chars_per_line = max(1, int(max_width * 0.9 / (font_size * 0.56)))
-    words = escape_drawtext(text).split(" ")
+    words = (text or "").split()
     lines, current = [], ""
     for w in words:
         candidate = f"{current} {w}".strip()
@@ -63,7 +63,14 @@ def wrap_drawtext(text, font_size, max_width=VIDEO_W):
             current = candidate
     if current:
         lines.append(current)
-    return "\\n".join(lines)
+    return "\n".join(lines) if lines else " "
+
+
+def write_textfile(tmpdir, name, text):
+    path = os.path.join(tmpdir, name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return escape_drawtext(path)
 
 
 async def synthesize_tts(text, out_path):
@@ -98,15 +105,16 @@ def build_scene_clip(tmpdir, idx, scene):
     voice_path = os.path.join(tmpdir, f"voice_{idx}.mp3")
     clip_path = os.path.join(tmpdir, f"scene_{idx}.mp4")
 
-    query = scene.get("keywords") or scene.get("visual") or "pharmacy"
+    query = (scene.get("keywords") or "").strip() or "pharmacy healthcare medicine"
     fetch_pexels_video(query, raw_video)
     asyncio.run(synthesize_tts(scene.get("voiceover", ""), voice_path))
 
-    onscreen = wrap_drawtext(scene.get("onscreen", ""), 40)
+    onscreen = scene.get("onscreen", "").strip()
     vf = f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H}"
     if onscreen:
+        textfile = write_textfile(tmpdir, f"onscreen_{idx}.txt", wrap_lines(onscreen, 40))
         vf += (
-            f",drawtext=fontfile='{FONT_PATH}':text='{onscreen}':"
+            f",drawtext=fontfile='{FONT_PATH}':textfile='{textfile}':"
             "fontcolor=white:fontsize=40:line_spacing=6:box=1:boxcolor=black@0.5:boxborderw=16:"
             "x=(w-text_w)/2:y=h-text_h-60"
         )
@@ -134,8 +142,8 @@ def build_outro_clip(tmpdir, data, script, photo_path=None):
         photo_h = int(VIDEO_H * 0.55)
         y_brand = photo_h + 40
         y_cta = y_brand + 100
-        brand = wrap_drawtext(data['brand'], 48)
-        cta = wrap_drawtext(script.get('cta', ''), 30)
+        brand_file = write_textfile(tmpdir, "outro_brand.txt", wrap_lines(data['brand'], 48))
+        cta_file = write_textfile(tmpdir, "outro_cta.txt", wrap_lines(script.get('cta', ''), 30))
         args = [
             "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}",
             "-loop", "1", "-i", photo_path,
@@ -143,22 +151,22 @@ def build_outro_clip(tmpdir, data, script, photo_path=None):
             "-filter_complex",
             f"[1:v]scale={VIDEO_W}:{photo_h}:force_original_aspect_ratio=decrease[pic];"
             f"[0:v][pic]overlay=(W-w)/2:(H-h)/2[bg];"
-            f"[bg]drawtext=fontfile='{FONT_PATH}':text='{brand}':fontcolor=white:fontsize=48:line_spacing=6:"
+            f"[bg]drawtext=fontfile='{FONT_PATH}':textfile='{brand_file}':fontcolor=white:fontsize=48:line_spacing=6:"
             f"x=(w-text_w)/2:y={y_brand},"
-            f"drawtext=fontfile='{FONT_PATH}':text='{cta}':fontcolor=white:fontsize=30:line_spacing=6:"
+            f"drawtext=fontfile='{FONT_PATH}':textfile='{cta_file}':fontcolor=white:fontsize=30:line_spacing=6:"
             f"x=(w-text_w)/2:y={y_cta}[outv]",
             "-map", "[outv]", "-map", "2:a:0",
         ]
     else:
-        brand = wrap_drawtext(data['brand'], 56)
-        cta = wrap_drawtext(script.get('cta', ''), 34)
+        brand_file = write_textfile(tmpdir, "outro_brand.txt", wrap_lines(data['brand'], 56))
+        cta_file = write_textfile(tmpdir, "outro_cta.txt", wrap_lines(script.get('cta', ''), 34))
         args = [
             "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}",
             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
             "-vf",
-            f"drawtext=fontfile='{FONT_PATH}':text='{brand}':fontcolor=white:fontsize=56:line_spacing=6:"
+            f"drawtext=fontfile='{FONT_PATH}':textfile='{brand_file}':fontcolor=white:fontsize=56:line_spacing=6:"
             f"x=(w-text_w)/2:y=h*0.30,"
-            f"drawtext=fontfile='{FONT_PATH}':text='{cta}':fontcolor=white:fontsize=34:line_spacing=6:"
+            f"drawtext=fontfile='{FONT_PATH}':textfile='{cta_file}':fontcolor=white:fontsize=34:line_spacing=6:"
             f"x=(w-text_w)/2:y=h*0.48",
         ]
 
