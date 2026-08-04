@@ -123,13 +123,9 @@ def build_scene_clip(tmpdir, idx, scene):
     run_ffmpeg([
         "-stream_loop", "-1", "-i", raw_video,
         "-i", voice_path,
-        "-stream_loop", "-1", "-i", BG_MUSIC_PATH,
-        "-filter_complex",
-        f"[0:v]{vf}[vout];"
-        "[1:a]volume=1.0[voice];[2:a]volume=0.15[bgm];"
-        "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]",
-        "-map", "[vout]", "-map", "[aout]",
+        "-vf", vf,
         "-r", str(VIDEO_FPS),
+        "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
         "-c:a", "aac", "-ar", "44100", "-ac", "1",
         "-shortest",
@@ -152,30 +148,27 @@ def build_outro_clip(tmpdir, data, script, photo_path=None):
         args = [
             "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}",
             "-loop", "1", "-i", photo_path,
-            "-stream_loop", "-1", "-i", BG_MUSIC_PATH,
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
             "-filter_complex",
             f"[1:v]scale={VIDEO_W}:{photo_h}:force_original_aspect_ratio=decrease[pic];"
             f"[0:v][pic]overlay=(W-w)/2:({photo_h}-h)/2[bg];"
             f"[bg]drawtext=fontfile='{FONT_PATH}':textfile='{brand_file}':fontcolor=white:fontsize=48:line_spacing=6:"
             f"x=(w-text_w)/2:y={y_brand},"
             f"drawtext=fontfile='{FONT_PATH}':textfile='{cta_file}':fontcolor=white:fontsize=30:line_spacing=6:"
-            f"x=(w-text_w)/2:y={y_cta}[outv];"
-            "[2:a]volume=0.35[aout]",
-            "-map", "[outv]", "-map", "[aout]",
+            f"x=(w-text_w)/2:y={y_cta}[outv]",
+            "-map", "[outv]", "-map", "2:a:0",
         ]
     else:
         brand_file = write_textfile(tmpdir, "outro_brand.txt", wrap_lines(data['brand'], 56))
         cta_file = write_textfile(tmpdir, "outro_cta.txt", wrap_lines(script.get('cta', ''), 34))
         args = [
             "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}",
-            "-stream_loop", "-1", "-i", BG_MUSIC_PATH,
-            "-filter_complex",
-            f"[0:v]drawtext=fontfile='{FONT_PATH}':textfile='{brand_file}':fontcolor=white:fontsize=56:line_spacing=6:"
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+            "-vf",
+            f"drawtext=fontfile='{FONT_PATH}':textfile='{brand_file}':fontcolor=white:fontsize=56:line_spacing=6:"
             f"x=(w-text_w)/2:y=h*0.30,"
             f"drawtext=fontfile='{FONT_PATH}':textfile='{cta_file}':fontcolor=white:fontsize=34:line_spacing=6:"
-            f"x=(w-text_w)/2:y=h*0.48[outv];"
-            "[1:a]volume=0.35[aout]",
-            "-map", "[outv]", "-map", "[aout]",
+            f"x=(w-text_w)/2:y=h*0.48",
         ]
 
     run_ffmpeg([
@@ -197,13 +190,29 @@ def concat_clips(tmpdir, clip_paths, output_path):
     run_ffmpeg(["-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path])
 
 
+def add_background_music(dry_path, output_path):
+    run_ffmpeg([
+        "-i", dry_path,
+        "-stream_loop", "-1", "-i", BG_MUSIC_PATH,
+        "-filter_complex",
+        "[0:a]volume=1.0[voice];[1:a]volume=0.15[bgm];"
+        "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]",
+        "-map", "0:v:0", "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac", "-ar", "44100", "-ac", "1",
+        output_path,
+    ])
+
+
 def assemble_video_sync(data, script, photo_path=None):
     with tempfile.TemporaryDirectory() as tmpdir:
         clips = [build_scene_clip(tmpdir, i, s) for i, s in enumerate(script.get("scenes", []))]
         clips.append(build_outro_clip(tmpdir, data, script, photo_path))
+        dry_path = os.path.join(tmpdir, "dry.mp4")
+        concat_clips(tmpdir, clips, dry_path)
         fd, out_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
-        concat_clips(tmpdir, clips, out_path)
+        add_background_music(dry_path, out_path)
         return out_path
 
 
