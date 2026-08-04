@@ -2,7 +2,12 @@ import os
 import logging
 import json
 import re
-import google.generativeai as genai
+import asyncio
+import tempfile
+import subprocess
+import requests
+import edge_tts
+from google import genai
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -19,19 +24,129 @@ AUDIENCES = ["Взрослые (18+)", "Дети и родители", "Пожи
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
 
+TEXT_MODEL = "gemini-3.5-flash-lite"
+TTS_VOICE = "ru-RU-SvetlanaNeural"
+VIDEO_W, VIDEO_H = 720, 1280
+FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSans-Bold.ttf")
 
-def get_gemini():
-    genai.configure(api_key=GEMINI_API_KEY)
-    return genai.GenerativeModel("gemini-3.5-flash-lite")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def call_gemini(prompt):
-    model = get_gemini()
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
     text = response.text.strip()
     text = re.sub(r'```json|```', '', text).strip()
     return text
+
+
+def run_ffmpeg(args):
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *args], check=True)
+
+
+def escape_drawtext(text):
+    return (text or "").replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+
+
+async def synthesize_tts(text, out_path):
+    communicate = edge_tts.Communicate(text or " ", TTS_VOICE)
+    await communicate.save(out_path)
+
+
+def fetch_pexels_video(query, out_path):
+    if not PEXELS_API_KEY:
+        raise RuntimeError("PEXELS_API_KEY не задан")
+    resp = requests.get(
+        "https://api.pexels.com/videos/search",
+        headers={"Authorization": PEXELS_API_KEY},
+        params={"query": query, "per_page": 5, "orientation": "portrait"},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    results = resp.json().get("videos", [])
+    if not results:
+        raise RuntimeError(f"Pexels: нет видео по запросу «{query}»")
+    files = sorted(results[0]["video_files"], key=lambda f: f.get("width", 0))
+    target = next((f for f in files if f.get("width", 0) >= 720), files[-1])
+    with requests.get(target["link"], stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 16):
+                f.write(chunk)
+
+
+def build_scene_clip(tmpdir, idx, scene):
+    raw_video = os.path.join(tmpdir, f"raw_{idx}.mp4")
+    voice_path = os.path.join(tmpdir, f"voice_{idx}.mp3")
+    clip_path = os.path.join(tmpdir, f"scene_{idx}.mp4")
+
+    query = scene.get("keywords") or scene.get("visual") or "pharmacy"
+    fetch_pexels_video(query, raw_video)
+    asyncio.run(synthesize_tts(scene.get("voiceover", ""), voice_path))
+
+    onscreen = escape_drawtext(scene.get("onscreen", ""))
+    vf = f"scale={VIDEO_W}:{VIDEO_H}:force_original_aspect_ratio=increase,crop={VIDEO_W}:{VIDEO_H}"
+    if onscreen:
+        vf += (
+            f",drawtext=fontfile='{FONT_PATH}':text='{onscreen}':"
+            "fontcolor=white:fontsize=48:box=1:boxcolor=black@0.5:boxborderw=16:"
+            "x=(w-text_w)/2:y=h-th-80"
+        )
+
+    run_ffmpeg([
+        "-stream_loop", "-1", "-i", raw_video,
+        "-i", voice_path,
+        "-vf", vf,
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "libx264", "-c:a", "aac", "-shortest",
+        clip_path,
+    ])
+    return clip_path
+
+
+def build_outro_clip(tmpdir, data, script):
+    outro_path = os.path.join(tmpdir, "outro.mp4")
+    brand = escape_drawtext(data['brand'])
+    cta = escape_drawtext(script.get('cta', ''))
+    run_ffmpeg([
+        "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}:d=2.5",
+        "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+        "-vf",
+        f"drawtext=fontfile='{FONT_PATH}':text='{brand}':fontcolor=white:fontsize=60:"
+        f"x=(w-text_w)/2:y=(h/2)-80,"
+        f"drawtext=fontfile='{FONT_PATH}':text='{cta}':fontcolor=white:fontsize=40:"
+        f"x=(w-text_w)/2:y=(h/2)+20",
+        "-c:v", "libx264", "-c:a", "aac", "-t", "2.5",
+        outro_path,
+    ])
+    return outro_path
+
+
+def concat_clips(clip_paths, output_path):
+    inputs = []
+    parts = []
+    for i, p in enumerate(clip_paths):
+        inputs += ["-i", p]
+        parts.append(f"[{i}:v:0][{i}:a:0]")
+    filter_complex = "".join(parts) + f"concat=n={len(clip_paths)}:v=1:a=1[outv][outa]"
+    run_ffmpeg([
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", "[outv]", "-map", "[outa]",
+        "-c:v", "libx264", "-c:a", "aac",
+        output_path,
+    ])
+
+
+def assemble_video_sync(data, script):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clips = [build_scene_clip(tmpdir, i, s) for i, s in enumerate(script.get("scenes", []))]
+        clips.append(build_outro_clip(tmpdir, data, script))
+        fd, out_path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        concat_clips(clips, out_path)
+        return out_path
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -175,6 +290,7 @@ async def choose_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     try:
         script = generate_script(context.user_data)
+        context.user_data['script'] = script
         await send_script(query, script, context.user_data)
     except Exception as e:
         await query.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПопробуйте: /start")
@@ -199,6 +315,7 @@ def generate_script(data):
 "num": "Сцена 1",
 "duration": "0-5 сек",
 "visual": "Видеоряд",
+"keywords": "2-4 английских слова для поиска стокового видео, например: pharmacist smiling patient",
 "voiceover": "Текст озвучки",
 "onscreen": "Текст на экране"
 }}
@@ -243,9 +360,40 @@ async def send_script(query, script, data):
     await query.message.reply_text(
         f"⏱️ *Версия 30 сек:*\n{script.get('version_30', '')}\n\n"
         f"⚡ *Версия 15 сек:*\n{script.get('version_15', '')}\n\n"
-        "✅ *Готово! Для нового препарата: /start*",
+        "✅ *Сценарий готов. Для нового препарата: /start*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🎬 Сгенерировать видео", callback_data="gen_video")
+        ]])
+    )
+
+
+async def generate_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = context.user_data
+    if 'script' not in data or 'selected_style' not in data:
+        await query.message.reply_text("❌ Сначала сгенерируйте сценарий: /start")
+        return
+    status_msg = await query.message.reply_text(
+        "🎬 *Собираю видео из сториборда...*\n⏳ Обычно занимает 1–3 минуты",
         parse_mode="Markdown"
     )
+    path = None
+    try:
+        path = await asyncio.to_thread(assemble_video_sync, data, data['script'])
+        with open(path, "rb") as f:
+            await query.message.reply_video(
+                f, caption=f"🎬 {data['brand']} — {data['selected_style']['name']}\n"
+                           "⚠️ Черновик на стоковых кадрах для внутренней оценки. "
+                           "Требует юридической проверки перед публикацией."
+            )
+        await status_msg.delete()
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Ошибка генерации видео: {str(e)}")
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -266,13 +414,16 @@ def main():
             GROUP: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_group)],
             INDICATIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_indications)],
             CHOOSE_STYLE: [CallbackQueryHandler(choose_style, pattern="^style_")],
-            DONE: [CommandHandler("start", start)],
+            DONE: [
+                CallbackQueryHandler(generate_video, pattern="^gen_video$"),
+                CommandHandler("start", start),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     app.add_handler(conv)
 
-    # --- Webhook-режим для Render Web Service (бесплатный тариф) ---
+    # --- Webhook-режим для бесплатного Render Web Service ---
     PORT = int(os.environ.get("PORT", 10000))
     RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 
