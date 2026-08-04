@@ -28,7 +28,8 @@ PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
 
 TEXT_MODEL = "gemini-3.5-flash-lite"
 TTS_VOICE = "ru-RU-SvetlanaNeural"
-VIDEO_W, VIDEO_H = 720, 1280
+VIDEO_W, VIDEO_H = 480, 854
+VIDEO_FPS = 25
 FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSans-Bold.ttf")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -68,7 +69,7 @@ def fetch_pexels_video(query, out_path):
     if not results:
         raise RuntimeError(f"Pexels: нет видео по запросу «{query}»")
     files = sorted(results[0]["video_files"], key=lambda f: f.get("width", 0))
-    target = next((f for f in files if f.get("width", 0) >= 720), files[-1])
+    target = next((f for f in files if f.get("width", 0) >= VIDEO_W), files[-1])
     with requests.get(target["link"], stream=True, timeout=60) as r:
         r.raise_for_status()
         with open(out_path, "wb") as f:
@@ -98,10 +99,15 @@ def build_scene_clip(tmpdir, idx, scene):
         "-stream_loop", "-1", "-i", raw_video,
         "-i", voice_path,
         "-vf", vf,
+        "-r", str(VIDEO_FPS),
         "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "libx264", "-c:a", "aac", "-shortest",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+        "-c:a", "aac", "-ar", "44100", "-ac", "1",
+        "-shortest",
         clip_path,
     ])
+    os.remove(raw_video)
+    os.remove(voice_path)
     return clip_path
 
 
@@ -110,33 +116,27 @@ def build_outro_clip(tmpdir, data, script):
     brand = escape_drawtext(data['brand'])
     cta = escape_drawtext(script.get('cta', ''))
     run_ffmpeg([
-        "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}:d=2.5",
-        "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+        "-f", "lavfi", "-i", f"color=c=0x1a1a2e:s={VIDEO_W}x{VIDEO_H}:r={VIDEO_FPS}:d=2.5",
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
         "-vf",
         f"drawtext=fontfile='{FONT_PATH}':text='{brand}':fontcolor=white:fontsize=60:"
         f"x=(w-text_w)/2:y=(h/2)-80,"
         f"drawtext=fontfile='{FONT_PATH}':text='{cta}':fontcolor=white:fontsize=40:"
         f"x=(w-text_w)/2:y=(h/2)+20",
-        "-c:v", "libx264", "-c:a", "aac", "-t", "2.5",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+        "-c:a", "aac", "-ar", "44100", "-ac", "1",
+        "-t", "2.5",
         outro_path,
     ])
     return outro_path
 
 
-def concat_clips(clip_paths, output_path):
-    inputs = []
-    parts = []
-    for i, p in enumerate(clip_paths):
-        inputs += ["-i", p]
-        parts.append(f"[{i}:v:0][{i}:a:0]")
-    filter_complex = "".join(parts) + f"concat=n={len(clip_paths)}:v=1:a=1[outv][outa]"
-    run_ffmpeg([
-        *inputs,
-        "-filter_complex", filter_complex,
-        "-map", "[outv]", "-map", "[outa]",
-        "-c:v", "libx264", "-c:a", "aac",
-        output_path,
-    ])
+def concat_clips(tmpdir, clip_paths, output_path):
+    list_path = os.path.join(tmpdir, "concat_list.txt")
+    with open(list_path, "w", encoding="utf-8") as f:
+        for p in clip_paths:
+            f.write(f"file '{p}'\n")
+    run_ffmpeg(["-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path])
 
 
 def assemble_video_sync(data, script):
@@ -145,7 +145,7 @@ def assemble_video_sync(data, script):
         clips.append(build_outro_clip(tmpdir, data, script))
         fd, out_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
-        concat_clips(clips, out_path)
+        concat_clips(tmpdir, clips, out_path)
         return out_path
 
 
