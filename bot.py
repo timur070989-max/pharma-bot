@@ -75,8 +75,19 @@ def write_textfile(tmpdir, name, text):
 
 
 async def synthesize_tts(text, out_path):
-    communicate = edge_tts.Communicate(text or " ", TTS_VOICE)
-    await communicate.save(out_path)
+    text = (text or "").strip()
+    if not text:
+        run_ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "2", "-c:a", "libmp3lame", out_path])
+        return
+    last_err = None
+    for attempt in range(3):
+        try:
+            await edge_tts.Communicate(text, TTS_VOICE).save(out_path)
+            return
+        except Exception as e:
+            last_err = e
+            await asyncio.sleep(1.5)
+    raise last_err
 
 
 def fetch_pexels_video(query, out_path):
