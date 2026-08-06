@@ -54,3 +54,16 @@ python bot.py
 
 - **Render** — создать сервис типа **Web Service** (не Background Worker — там нет бесплатного тарифа), build command `pip install -r requirements.txt`, start command `python bot.py`. `PORT` и `RENDER_EXTERNAL_URL` Render проставляет сам, системные пакеты — из `apt.txt`. Вручную указать только `BOT_TOKEN`, `GEMINI_API_KEY`, `PEXELS_API_KEY`.
 - **Railway** — в репозитории есть `railway.toml` (сборка через Nixpacks с `ffmpeg`, старт командой `python bot.py`).
+
+## Генерация видео из чата (без Telegram)
+
+Весь пайплайн сборки ролика (промпты Gemini, EdgeTTS, Pexels, FFmpeg) вынесен из `bot.py` в переиспользуемый модуль `video_pipeline.py`. В `.claude/skills/pharma-video-generation/` лежит Claude Code Skill, который позволяет сгенерировать черновик видеорекламы препарата прямо из чата с Claude, без запуска Telegram-бота:
+
+```bash
+python .claude/skills/pharma-video-generation/scripts/generate_ad_video.py \
+  --brand "Название" --inn "МНН" --form "Форма" \
+  --audience "Аудитория" --group "Группа" --indications "Показания" \
+  --output /tmp/ad.mp4
+```
+
+Нужны те же `GEMINI_API_KEY`/`PEXELS_API_KEY` и системные `ffmpeg`/`ffprobe`, что и для бота.
