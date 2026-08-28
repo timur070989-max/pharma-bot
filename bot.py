@@ -31,6 +31,7 @@ TTS_VOICE = "ru-RU-SvetlanaNeural"
 VIDEO_W, VIDEO_H = 480, 854
 VIDEO_FPS = 25
 FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSans-Bold.ttf")
+FONT_PATH = FONT_PATH.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
 BG_MUSIC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "bg_music.mp3")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -137,7 +138,7 @@ def build_scene_clip(tmpdir, idx, scene):
         "-vf", vf,
         "-r", str(VIDEO_FPS),
         "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-ar", "44100", "-ac", "1",
         "-shortest",
         clip_path,
@@ -180,12 +181,13 @@ def build_outro_clip(tmpdir, data, script, photo_path=None):
             f"x=(w-text_w)/2:y=h*0.30,"
             f"drawtext=fontfile='{FONT_PATH}':textfile='{cta_file}':fontcolor=white:fontsize=34:line_spacing=6:"
             f"x=(w-text_w)/2:y=h*0.48",
+            "-map", "0:v:0", "-map", "1:a:0",
         ]
 
     run_ffmpeg([
         *args,
         "-r", str(VIDEO_FPS),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-ar", "44100", "-ac", "1",
         "-t", "2.5",
         outro_path,
@@ -314,7 +316,7 @@ async def get_indications(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     try:
-        styles = generate_styles(context.user_data)
+        styles = await asyncio.to_thread(generate_styles, context.user_data)
         context.user_data['styles'] = styles
         text = "🎨 *Готово! Выберите стиль видеорекламы:*\n\n"
         keyboard_buttons = []
@@ -363,7 +365,9 @@ def generate_styles(data):
     text = call_gemini(prompt)
     start = text.find('[')
     end = text.rfind(']')
-    return json.loads(text[start:end+1])
+    if start != -1 and end != -1 and end >= start:
+        return json.loads(text[start:end+1])
+    return json.loads(text)
 
 
 async def choose_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -377,7 +381,7 @@ async def choose_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     try:
-        script = generate_script(context.user_data)
+        script = await asyncio.to_thread(generate_script, context.user_data)
         context.user_data['script'] = script
         await send_script(query, script, context.user_data)
     except Exception as e:
@@ -416,7 +420,9 @@ def generate_script(data):
     text = call_gemini(prompt)
     start = text.find('{')
     end = text.rfind('}')
-    return json.loads(text[start:end+1])
+    if start != -1 and end != -1 and end >= start:
+        return json.loads(text[start:end+1])
+    return json.loads(text)
 
 
 async def send_script(query, script, data):
