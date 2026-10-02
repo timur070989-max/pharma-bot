@@ -37,6 +37,7 @@ pip install -r requirements.txt
 | `BOT_TOKEN` | Токен Telegram-бота, полученный у [@BotFather](https://t.me/BotFather) |
 | `GEMINI_API_KEY` | API-ключ Google Gemini |
 | `PEXELS_API_KEY` | Бесплатный API-ключ [Pexels](https://www.pexels.com/api/) для подбора видеоряда |
+| `ALLOWED_USER_IDS` | Telegram user ID через запятую, кому разрешён бот (свой ID бот покажет при попытке входа). Если пусто — бот открыт всем и любой может тратить квоты Gemini/Pexels |
 | `PORT` | Порт для webhook-сервера (по умолчанию `10000`, на Render подставляется автоматически) |
 | `RENDER_EXTERNAL_URL` | Публичный URL сервиса — используется для настройки Telegram webhook (на Render подставляется автоматически) |
 
@@ -48,9 +49,11 @@ pip install -r requirements.txt
 python bot.py
 ```
 
-Для локального запуска (или на платформе без публичного URL) замените в `bot.py` вызов `app.run_webhook(...)` на `app.run_polling()`.
+Если `RENDER_EXTERNAL_URL` не задан (локальный запуск), бот сам переключается на polling.
+Путь webhook не содержит токен бота, а Telegram подтверждает каждый запрос секретным заголовком.
+Видео собираются по одному: следующий запрос ждёт в очереди, чтобы бесплатный инстанс не упал по памяти.
 
 ## Деплой
 
-- **Render** — создать сервис типа **Web Service** (не Background Worker — там нет бесплатного тарифа), build command `pip install -r requirements.txt`, start command `python bot.py`. `PORT` и `RENDER_EXTERNAL_URL` Render проставляет сам, системные пакеты — из `apt.txt`. Вручную указать только `BOT_TOKEN`, `GEMINI_API_KEY`, `PEXELS_API_KEY`.
+- **Render** — создать сервис типа **Web Service** (не Background Worker — там нет бесплатного тарифа), build command `pip install -r requirements.txt`, start command `python bot.py`. `PORT` и `RENDER_EXTERNAL_URL` Render проставляет сам, системные пакеты — из `apt.txt`. Вручную указать `BOT_TOKEN`, `GEMINI_API_KEY`, `PEXELS_API_KEY` и `ALLOWED_USER_IDS`.
 - **Railway** — в репозитории есть `railway.toml` (сборка через Nixpacks с `ffmpeg`, старт командой `python bot.py`).
